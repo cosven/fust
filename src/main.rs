@@ -5,6 +5,9 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use log::LevelFilter;
+use simple_logging;
+use std::fs::OpenOptions;
 use std::{
     error::Error,
     io,
@@ -16,6 +19,8 @@ use tui::{
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
+    simple_logging::log_to_file("fust.log", LevelFilter::Info);
+
     // setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();

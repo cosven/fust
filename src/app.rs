@@ -3,6 +3,7 @@ use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json;
 use serde_repr::{Deserialize_repr, Serialize_repr};
+use std::cmp::min;
 use std::convert::{TryFrom, TryInto};
 use std::io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Read, Write};
 use std::net::TcpStream;
@@ -10,11 +11,15 @@ use std::result::Result;
 use std::str::{from_utf8, SplitWhitespace};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, SystemTime};
 use tui::{
     backend::Backend,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    widgets::{Block, Borders, Gauge, LineGauge},
+    layout::{Alignment, Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    symbols::line::THICK,
+    symbols::DOT,
+    text::{Span, Spans},
+    widgets::{Block, Borders, Gauge, LineGauge, Paragraph, Wrap},
     Frame,
 };
 
@@ -32,6 +37,17 @@ pub struct Message {
 enum RespOrMsg {
     Response(Response),
     Message(Message),
+}
+
+fn fmt_duration(duration: Duration) -> String {
+    let seconds = duration.as_secs() % 60;
+    let minutes = (duration.as_secs() / 60) % 60;
+    let hours = (duration.as_secs() / 60) / 60;
+    if hours > 0 {
+        format!("{:0>2}:{:0>2}:{:0>2}", hours, minutes, seconds)
+    } else {
+        format!("{:0>2}:{:0>2}", minutes, seconds)
+    }
 }
 
 fn read_response(reader: &mut BufReader<TcpStream>) -> Result<RespOrMsg, Error> {
@@ -106,11 +122,62 @@ impl PlayerMetadata {
     }
 }
 
+pub struct Progress {
+    ts: SystemTime,
+    position: Duration,
+
+    paused: bool,
+    paused_ts: SystemTime,
+}
+
+impl Default for Progress {
+    fn default() -> Progress {
+        let now = SystemTime::now();
+        return Progress {
+            ts: now,
+            position: Duration::new(0, 0),
+
+            paused_ts: now,
+            paused: false,
+        };
+    }
+}
+
+impl Progress {
+    pub fn on_seeked(&mut self, position: Duration) {
+        self.ts = SystemTime::now();
+        self.position = position;
+    }
+
+    pub fn pause(&mut self) {
+        self.position = self.current();
+        self.paused_ts = SystemTime::now();
+        self.ts = self.paused_ts;
+        self.paused = true;
+    }
+
+    pub fn resume(&mut self) {
+        self.position = self.current();
+        self.ts = SystemTime::now();
+        self.paused = false;
+    }
+
+    pub fn current(&self) -> Duration {
+        if self.paused {
+            self.position
+        } else {
+            self.position + self.ts.elapsed().unwrap()
+        }
+    }
+}
+
 // Store app states.
 #[allow(dead_code)]
 pub struct AppInner {
     metadata: PlayerMetadata,
-    position: u16,
+    lyric_s: String, // Current lyric sentence.
+    progress: Progress,
+    duration: Duration,
     state: PlayerState,
 }
 
@@ -122,13 +189,36 @@ impl AppInner {
                 // TODO: maybe use tuple?
                 let value: serde_json::Value = serde_json::from_str(&body).unwrap();
                 match value[0].as_u64().unwrap().try_into() {
-                    Ok(state) => self.state = state,
+                    Ok(state) => {
+                        self.state = state;
+                        match state {
+                            PlayerState::Paused => self.progress.pause(),
+                            PlayerState::Stopped => self.progress.on_seeked(Duration::new(0, 0)),
+                            PlayerState::Playing => self.progress.resume(),
+                        }
+                    }
                     Err(_) => panic!("unknown player state"),
                 }
             }
             "player.metadata_changed" => {
                 let args: (PlayerMetadata,) = serde_json::from_str(&body).unwrap();
                 self.metadata = args.0;
+                self.progress.on_seeked(Duration::new(0, 0));
+            }
+            "player.duration_changed" => {
+                let args: (f64,) = serde_json::from_str(&body).unwrap();
+                self.duration = Duration::from_secs_f64(args.0 as f64);
+            }
+            "player.seeked" => {
+                let args: (f64,) = serde_json::from_str(&body).unwrap();
+                self.progress
+                    .on_seeked(Duration::from_secs_f64(args.0 as f64));
+            }
+            "live_lyric.sentence_changed" => {
+                if body.len() > 0 {
+                    let args: (String,) = serde_json::from_str(&body).unwrap();
+                    self.lyric_s = args.0;
+                }
             }
             _ => {}
         }
@@ -180,12 +270,15 @@ pub fn subscribe_signals(inner: Arc<Mutex<AppInner>>) {
                 info!("{}", line);
             }
 
+            // Subscribe topics and consume responses.
             writer
                 .write("set --pubsub-version 2.0\n".as_bytes())
                 .unwrap();
             writer.write("sub player.*\n".as_bytes()).unwrap();
+            writer.write("sub live_lyric.*\n".as_bytes()).unwrap();
             writer.flush().unwrap();
-            // Consume two responses.
+
+            read_response(&mut reader).unwrap();
             read_response(&mut reader).unwrap();
             read_response(&mut reader).unwrap();
 
@@ -209,7 +302,9 @@ impl App {
         App {
             inner: Arc::new(Mutex::new(AppInner {
                 metadata: PlayerMetadata::new(),
-                position: 0,
+                lyric_s: "暂无歌词".to_owned(),
+                progress: Progress::default(),
+                duration: Duration::new(0, 0),
                 state: PlayerState::Stopped,
             })),
         }
@@ -217,29 +312,39 @@ impl App {
 
     pub fn on_tick(&mut self) {}
 
+    // Sync player status immediattely by sending a request `status --format=json`.
     pub fn sync_player_status(&mut self) {
         let resp = send_request("status --format=json".to_owned()).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
         let song = value["song"].clone();
-        match value["state"].as_str().unwrap() {
-            "paused" => self.inner.lock().unwrap().state = PlayerState::Paused,
-            "playing" => self.inner.lock().unwrap().state = PlayerState::Playing,
-            "stopped" => self.inner.lock().unwrap().state = PlayerState::Stopped,
-            _ => self.inner.lock().unwrap().state = PlayerState::Stopped,
-        }
-        // println!("{}", song["title"].to_string());
-        // FIXME: there are quotes in the string.
+        let duration = Duration::from_secs_f64(value["duration"].as_f64().unwrap());
+        let position = Duration::from_secs_f64(value["position"].as_f64().unwrap());
         let metadata = PlayerMetadata {
-            title: song["title"].to_string(),
-            album: Some(song["album"]["name"].to_string()),
-            artists: song["artists"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|item: &serde_json::Value| item["name"].to_string())
-                .collect::<Vec<String>>(),
+            title: song["title"].as_str().unwrap().to_string(),
+            album: Some(song["album_name"].as_str().unwrap().to_string()),
+            artists: vec![song["artists_name"].as_str().unwrap().to_string()],
         };
-        self.inner.lock().unwrap().metadata = metadata.clone();
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.metadata = metadata.clone();
+            inner.progress.on_seeked(position);
+            inner.duration = duration;
+            match value["state"].as_str().unwrap() {
+                "paused" => {
+                    inner.state = PlayerState::Paused;
+                    inner.progress.pause();
+                }
+                "stopped" => {
+                    inner.state = PlayerState::Stopped;
+                    inner.progress.pause();
+                }
+                "playing" => {
+                    inner.state = PlayerState::Playing;
+                    inner.progress.resume();
+                }
+                _ => self.inner.lock().unwrap().state = PlayerState::Stopped,
+            }
+        }
     }
 
     pub fn subscribe_msgs(&self) {
@@ -254,35 +359,76 @@ impl App {
 // Code for UI.
 //
 
-fn s_player_state(state: PlayerState) -> String {
-    match state {
-        PlayerState::Stopped => "已停止".to_owned(),
-        PlayerState::Paused => "暂停".to_owned(),
-        PlayerState::Playing => "播放中".to_owned(),
-    }
-}
-
 pub fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
+    let area = f.size();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
-        .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
-        .split(f.size());
+        .margin(1)
+        .constraints(
+            [
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ]
+            .as_ref(),
+        )
+        .split(area);
 
     let inner = app.inner.lock().unwrap();
     let metadata = inner.metadata.clone();
-    let title = format!(
-        " {}: {} - {} - {} ",
-        s_player_state(inner.state),
-        metadata.title,
-        metadata.artists[0],
-        metadata.album.unwrap_or_else(|| "".to_owned()),
-    );
+    let lyric_s = inner.lyric_s.clone();
+    let position = inner.progress.current();
+    let duration = inner.duration;
+    let state = inner.state;
     drop(inner);
-    let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .gauge_style(Style::default().fg(Color::Yellow))
-        .percent(60);
 
-    f.render_widget(gauge, chunks[0]);
+    let mut song_spans = vec![
+        Span::raw(" ".to_owned()),
+        Span::styled("♫  ", Style::default().fg(Color::Yellow)),
+        Span::raw(metadata.title),
+    ];
+    if metadata.artists.len() > 0 {
+        song_spans.push(Span::raw(DOT));
+        song_spans.push(Span::styled(DOT, Style::default().fg(Color::Gray)));
+        song_spans.push(Span::raw(metadata.artists.join(",")));
+    }
+
+    let color = match state {
+        PlayerState::Stopped => Color::Gray,
+        PlayerState::Paused => Color::Gray,
+        PlayerState::Playing => Color::LightCyan,
+    };
+    let ratio = match duration.as_secs_f64() <= 0.0 {
+        true => 0.0,
+        false => {
+            let ratio = position.as_secs_f64() / duration.as_secs_f64();
+            if ratio >= 1.0 {
+                1.0 as f64
+            } else {
+                ratio
+            }
+        }
+    };
+    let progress = LineGauge::default()
+        .gauge_style(Style::default().fg(color))
+        .label(Span::styled(
+            format!("[{}/{}]", fmt_duration(position), fmt_duration(duration)),
+            Style::default().fg(color).add_modifier(Modifier::ITALIC),
+        ))
+        .line_set(THICK)
+        .ratio(ratio);
+    f.render_widget(progress, chunks[2]);
+
+    let lyric = Paragraph::new(vec![Spans::from(lyric_s.to_owned())])
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Right);
+    let song = Paragraph::new(Spans::from(song_spans)).wrap(Wrap { trim: true });
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .margin(0)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(chunks[3]);
+    f.render_widget(song, h_chunks[0]);
+    f.render_widget(lyric, h_chunks[1]);
 }
