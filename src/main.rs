@@ -1,13 +1,13 @@
 mod app;
-use app::{ui, App};
+mod player;
+mod ui;
+use app::App;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use log::LevelFilter;
-use simple_logging;
-use std::fs::OpenOptions;
 use std::{
     error::Error,
     io,
@@ -17,9 +17,10 @@ use tui::{
     backend::{Backend, CrosstermBackend},
     Terminal,
 };
+use ui::ui;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    simple_logging::log_to_file("fust.log", LevelFilter::Info);
+    simple_logging::log_to_file("fust.log", LevelFilter::Info).unwrap();
 
     // setup terminal
     enable_raw_mode()?;
