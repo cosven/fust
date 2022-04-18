@@ -1,5 +1,6 @@
 mod app;
 mod player;
+mod rpc;
 mod ui;
 use app::App;
 use crossterm::{
