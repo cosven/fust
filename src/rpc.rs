@@ -1,9 +1,7 @@
-use crate::app::AppInner;
 use log::{error, info};
 use std::io::{BufRead, BufReader, BufWriter, Error, ErrorKind, Read, Write};
 use std::net::TcpStream;
 use std::result::Result;
-use std::sync::{Arc, Mutex};
 
 #[allow(dead_code)]
 pub struct Response {
@@ -65,7 +63,9 @@ pub fn send_request(cmd: String) -> Result<Response, Error> {
                 info!("{}", line);
             }
 
-            writer.write_all(format!("{}\n", cmd).as_bytes()).unwrap();
+            writer
+                .write_all(format!("{} --format=json\n", cmd).as_bytes())
+                .unwrap();
             writer.flush().unwrap();
             match read_response(&mut reader)? {
                 RespOrMsg::Response(resp) => Ok(resp),
@@ -80,7 +80,8 @@ pub fn send_request(cmd: String) -> Result<Response, Error> {
 }
 
 // TODO: exit and reconnect properly.
-pub fn subscribe_signals(inner: Arc<Mutex<AppInner>>) {
+pub fn subscribe_topics(topics: Vec<&str>, cb: &dyn Fn(Message)) {
+    // TODO: use port as a paramter.
     match TcpStream::connect("127.0.0.1:23334") {
         Ok(stream) => {
             info!("Successfully connected to fuo pubsub server in port 23334");
@@ -94,25 +95,25 @@ pub fn subscribe_signals(inner: Arc<Mutex<AppInner>>) {
             }
 
             // Subscribe topics and consume responses.
-            writer
-                .write_all(
-                    "set --pubsub-version 2.0\n\
-                     sub player.*\n\
-                     sub live_lyric.*\n"
-                        .as_bytes(),
-                )
-                .unwrap();
+            // TODO: handle request error.
+            writer.write_all(b"set --pubsub-version 2.0\n").unwrap();
+            let mut req_count = 1;
+            for topic in topics.iter() {
+                writer
+                    .write_all(format!("sub {}\n", topic).as_bytes())
+                    .unwrap();
+                req_count += 1;
+            }
             writer.flush().unwrap();
-
-            read_response(&mut reader).unwrap();
-            read_response(&mut reader).unwrap();
-            read_response(&mut reader).unwrap();
+            for _ in 0..req_count {
+                read_response(&mut reader).unwrap();
+            }
 
             // Wait for messages.
             loop {
                 let resp_or_msg = read_response(&mut reader).unwrap();
                 match resp_or_msg {
-                    RespOrMsg::Message(msg) => inner.lock().unwrap().on_message(msg),
+                    RespOrMsg::Message(msg) => cb(msg),
                     RespOrMsg::Response(_) => {}
                 }
             }

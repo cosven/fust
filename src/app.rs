@@ -1,5 +1,5 @@
 use crate::player::{PlayerMetadata, PlayerState, Progress};
-use crate::rpc::{read_response, send_request, subscribe_signals, Message, RespOrMsg, Response};
+use crate::rpc::{send_request, subscribe_topics, Message};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -79,7 +79,7 @@ impl App {
 
     // Sync player status immediattely by sending a request `status --format=json`.
     pub fn sync_player_status(&mut self) {
-        let resp = send_request("status --format=json".to_owned()).unwrap();
+        let resp = send_request("status".to_owned()).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
         let song = value["song"].clone();
         let duration = Duration::from_secs_f64(value["duration"].as_f64().unwrap());
@@ -115,7 +115,9 @@ impl App {
     pub fn subscribe_msgs(&self) {
         let inner = self.inner.clone();
         thread::spawn(move || {
-            subscribe_signals(inner);
+            subscribe_topics(vec!["player.*", "live_lyric.*"], &|msg| {
+                inner.lock().unwrap().on_message(msg)
+            });
         });
     }
 }
