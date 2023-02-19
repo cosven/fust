@@ -1,5 +1,7 @@
+use crate::models::BriefSong;
 use crate::player::{PlayerMetadata, PlayerState, Progress};
 use crate::rpc::{send_request, subscribe_topics, Message};
+use log::info;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -12,6 +14,7 @@ pub struct AppInner {
     pub progress: Progress,
     pub duration: Duration,
     pub state: PlayerState,
+    pub current_playlist: Vec<BriefSong>,
 }
 
 impl AppInner {
@@ -71,6 +74,7 @@ impl App {
                 progress: Progress::default(),
                 duration: Duration::new(0, 0),
                 state: PlayerState::Stopped,
+                current_playlist: vec![],
             })),
         }
     }
@@ -109,6 +113,16 @@ impl App {
                 }
                 _ => self.inner.lock().unwrap().state = PlayerState::Stopped,
             }
+        }
+    }
+
+    pub fn sync_current_playlist(&mut self) {
+        let resp = send_request("list".to_owned()).unwrap();
+        let songs: Vec<BriefSong> = serde_json::from_slice(&resp.body).unwrap();
+        {
+            let mut inner = self.inner.lock().unwrap();
+            info!("sync current playlist, first {}", songs[0].title);
+            inner.current_playlist = songs;
         }
     }
 

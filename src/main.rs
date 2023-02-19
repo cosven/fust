@@ -1,4 +1,5 @@
 mod app;
+mod models;
 mod player;
 mod rpc;
 mod ui;
@@ -67,8 +68,10 @@ fn run_app<B: Backend>(
             .unwrap_or_else(|| Duration::from_secs(0));
         if crossterm::event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
-                if let KeyCode::Char('q') = key.code {
-                    return Ok(());
+                match key.code {
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('l') => app.sync_current_playlist(),
+                    _ => (),
                 }
             }
         }

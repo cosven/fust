@@ -8,7 +8,7 @@ use tui::{
     symbols::line::THICK,
     symbols::DOT,
     text::{Span, Spans},
-    widgets::{LineGauge, Paragraph, Wrap},
+    widgets::{LineGauge, Paragraph, Row, Table, TableState, Wrap},
     Frame,
 };
 
@@ -46,6 +46,37 @@ pub fn ui<B: Backend>(f: &mut Frame<B>, app: &App) {
     let duration = inner.duration;
     let state = inner.state;
     drop(inner);
+
+    {
+        let inner = app.inner.lock().unwrap();
+        let current_playlist = &inner.current_playlist;
+        if current_playlist.len() > 0 {
+            let items: Vec<Row> = current_playlist
+                .iter()
+                .map(|song| {
+                    Row::new(vec![
+                        song.title.clone(),
+                        song.artists_name.clone(),
+                        song.album_name.clone(),
+                        song.duration_ms.clone(),
+                    ])
+                })
+                .collect();
+            let headers = Row::new(vec!["歌曲标题", "歌手", "专辑", "时长"]);
+            let playlist = Table::new(items)
+                .header(headers)
+                .highlight_symbol(">> ")
+                .widths(&[
+                    Constraint::Percentage(40),
+                    Constraint::Percentage(10),
+                    Constraint::Percentage(30),
+                    Constraint::Percentage(5),
+                ]);
+            let mut state = TableState::default();
+            state.select(Some(1));
+            f.render_stateful_widget(playlist, chunks[0], &mut state);
+        }
+    }
 
     let mut song_spans = vec![
         Span::raw(" ".to_owned()),
