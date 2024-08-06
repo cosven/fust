@@ -70,6 +70,8 @@ fn run_app<B: Backend>(
             if let Event::Key(key) = event::read()? {
                 match key.code {
                     KeyCode::Char('q') => return Ok(()),
+
+                    KeyCode::Char('p') | KeyCode::Char(' ') => app.toggle_playpause(),
                     KeyCode::Char('l') => app.sync_current_playlist(),
                     _ => (),
                 }
