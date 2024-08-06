@@ -127,11 +127,18 @@ impl App {
     }
 
     pub fn toggle_playpause(&self) {
-        let resp = send_request("toggle").unwrap();
-        info!(
-            "toggled playpause, resp: {}",
-            String::from_utf8_lossy(&resp.body)
-        );
+        let _ = send_request("toggle").unwrap();
+        info!("toggled playpause");
+    }
+
+    pub fn play_next(&self) {
+        let _ = send_request("next").unwrap();
+        info!("switched to next song");
+    }
+
+    pub fn play_previous(&self) {
+        let _ = send_request("previous").unwrap();
+        info!("switched to previous song");
     }
 
     pub fn subscribe_msgs(&self) {
