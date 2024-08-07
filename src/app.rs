@@ -83,7 +83,7 @@ impl App {
 
     // Sync player status immediattely by sending a request `status --format=json`.
     pub fn sync_player_status(&mut self) {
-        let resp = send_request("status".to_owned()).unwrap();
+        let resp = send_request("status").unwrap();
         let value: serde_json::Value = serde_json::from_slice(&resp.body).unwrap();
         let song = value["song"].clone();
         let duration = Duration::from_secs_f64(value["duration"].as_f64().unwrap());
@@ -117,13 +117,28 @@ impl App {
     }
 
     pub fn sync_current_playlist(&mut self) {
-        let resp = send_request("list".to_owned()).unwrap();
+        let resp = send_request("list").unwrap();
         let songs: Vec<BriefSong> = serde_json::from_slice(&resp.body).unwrap();
         {
             let mut inner = self.inner.lock().unwrap();
             info!("sync current playlist, first {}", songs[0].title);
             inner.current_playlist = songs;
         }
+    }
+
+    pub fn toggle_playpause(&self) {
+        let _ = send_request("toggle").unwrap();
+        info!("toggled playpause");
+    }
+
+    pub fn play_next(&self) {
+        let _ = send_request("next").unwrap();
+        info!("switched to next song");
+    }
+
+    pub fn play_previous(&self) {
+        let _ = send_request("previous").unwrap();
+        info!("switched to previous song");
     }
 
     pub fn subscribe_msgs(&self) {

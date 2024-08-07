@@ -50,7 +50,7 @@ pub fn read_response(reader: &mut BufReader<TcpStream>) -> Result<RespOrMsg, Err
     }
 }
 
-pub fn send_request(cmd: String) -> Result<Response, Error> {
+pub fn send_request(cmd: impl std::fmt::Display) -> Result<Response, Error> {
     match TcpStream::connect("127.0.0.1:23333") {
         Ok(stream) => {
             info!("Successfully connected to fuo pubsub server in port 23333");
@@ -64,7 +64,7 @@ pub fn send_request(cmd: String) -> Result<Response, Error> {
             }
 
             writer
-                .write_all(format!("{} --format=json\n", cmd).as_bytes())
+                .write_all(format!("{cmd} --format=json\n").as_bytes())
                 .unwrap();
             writer.flush().unwrap();
             match read_response(&mut reader)? {
